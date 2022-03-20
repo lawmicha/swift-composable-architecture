@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import SwiftUI
+import Amplify
 
 enum Filter: LocalizedStringKey, CaseIterable, Hashable {
   case all = "All"
@@ -22,19 +23,22 @@ struct AppState: Equatable {
 }
 
 enum AppAction: Equatable {
-  case addTodoButtonTapped
-  case clearCompletedButtonTapped
-  case delete(IndexSet)
-  case editModeChanged(EditMode)
-  case filterPicked(Filter)
-  case move(IndexSet, Int)
-  case sortCompletedTodos
-  case todo(id: Todo.ID, action: TodoAction)
+    case addTodoButtonTapped
+    case clearCompletedButtonTapped
+    case delete(IndexSet)
+    case editModeChanged(EditMode)
+    case filterPicked(Filter)
+    case move(IndexSet, Int)
+    case sortCompletedTodos
+    case todo(id: Todo.ID, action: TodoAction)
+    case todoReceived(_ todo: Todo)
+    case subscribeToTodos
 }
 
 struct AppEnvironment {
   var mainQueue: AnySchedulerOf<DispatchQueue>
   var uuid: () -> UUID
+  var datastore: DataStoreCategory
 }
 
 let appReducer = Reducer<AppState, AppAction, AppEnvironment>.combine(
@@ -45,10 +49,29 @@ let appReducer = Reducer<AppState, AppAction, AppEnvironment>.combine(
   ),
   Reducer { state, action, environment in
     switch action {
+    case .subscribeToTodos:
+        print("Subscribing to Todos")
+        // TODO: how to create a long-lived subscription to the data that eventually sends the action
+        // .todoReceived(todo)
+        return .none
+    case .todoReceived(let id):
+        print("Received todo \(id)")
+        return .none
     case .addTodoButtonTapped:
-        state.todos.insert(
-            Todo(id: environment.uuid().uuidString, description: "", isComplete: false), at: 0)
-      return .none
+        let todo = Todo(id: environment.uuid().uuidString, description: "", isComplete: false)
+        state.todos.insert(todo, at: 0)
+        
+        return Effect<AppAction, Never>.future { callback in
+            environment.datastore.save(todo) { result in
+                switch result {
+                case .success(let todo):
+                    callback(.success(.todoReceived(todo)))
+                case .failure(let error):
+                    // TODO: what to do in failure case?
+                    callback(.success(.todoReceived(todo)))
+                }
+            }
+        }
 
     case .clearCompletedButtonTapped:
       state.todos.removeAll(where: \.isComplete)
@@ -158,7 +181,9 @@ struct AppView: View {
       .environment(
         \.editMode,
         self.viewStore.binding(get: \.editMode, send: AppAction.editModeChanged)
-      )
+      ).onAppear {
+          self.viewStore.send(.subscribeToTodos)
+      }
     }
     .navigationViewStyle(.stack)
   }
@@ -193,7 +218,8 @@ struct AppView_Previews: PreviewProvider {
         reducer: appReducer,
         environment: AppEnvironment(
           mainQueue: .main,
-          uuid: UUID.init
+          uuid: UUID.init,
+          datastore: Amplify.DataStore
         )
       )
     )
